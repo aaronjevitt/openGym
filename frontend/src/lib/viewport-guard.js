@@ -13,9 +13,16 @@
  * a text field lost focus: if the visual viewport is not where the layout viewport is, ask for
  * the scroll position we already have. iOS treats that as a scroll and realigns the viewports;
  * on every other platform it is a no-op.
+ *
+ * Rotating the phone and coming back from another app leave the same offset behind in the
+ * home-screen app — the rest timer then scrolls along with the page instead of staying docked
+ * at the bottom. Neither involves the keyboard, so they get their own triggers. A rotation can
+ * also catch `innerHeight` mid-change and read as "keyboard open"; that stale reading is what
+ * switched the scroll-time correction off, so both triggers measure the keyboard afresh.
  */
 const KEYBOARD_MIN_PX = 100
 const SETTLE_MS = 350   // the keyboard's dismiss animation; the offset is only wrong after it
+const ROTATE_MS = 800   // the rotation animation, after which innerHeight is final
 
 const isText = el => !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
 
@@ -86,14 +93,27 @@ export function installViewportGuard(win = window) {
   }
   const onScroll = () => { if (!wasOpen) realign(win) }
   const onFocusOut = e => { if (isText(e.target)) settle() }
+  // Rotation or a return from another app: re-read the keyboard state, which a rotation can
+  // leave stale, then check now, after a beat, and once the rotation has finished.
+  const resync = () => {
+    const check = () => { wasOpen = keyboardOpen(win); realign(win) }
+    check(); later(check, SETTLE_MS); later(check, ROTATE_MS)
+  }
+  const onVisible = () => { if (win.document.visibilityState !== 'hidden') resync() }
 
   vv.addEventListener('resize', onResize)
   vv.addEventListener('scroll', onScroll)
   win.document.addEventListener('focusout', onFocusOut)
+  win.addEventListener?.('orientationchange', resync)
+  win.addEventListener?.('pageshow', resync)
+  win.document.addEventListener('visibilitychange', onVisible)
   return () => {
     vv.removeEventListener('resize', onResize)
     vv.removeEventListener('scroll', onScroll)
     win.document.removeEventListener('focusout', onFocusOut)
+    win.removeEventListener?.('orientationchange', resync)
+    win.removeEventListener?.('pageshow', resync)
+    win.document.removeEventListener('visibilitychange', onVisible)
     timers.forEach(t => win.clearTimeout(t))
   }
 }
