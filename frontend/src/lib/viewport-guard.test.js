@@ -14,12 +14,15 @@ function fakeWindow({ innerHeight = 800, vvHeight = 800, offsetTop = 0, pageTop 
     addEventListener(t, fn) { on(this.listeners, t, fn) }, removeEventListener() {}
   }
   const win = {
-    innerHeight, scrollX: 0, scrollY, visualViewport: vv, document: doc,
+    innerHeight, scrollX: 0, scrollY, visualViewport: vv, document: doc, listeners: {},
+    addEventListener(t, fn) { on(this.listeners, t, fn) }, removeEventListener() {},
     scrollTo: vi.fn(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout,
     fire: (target, type, ev = {}) => (target.listeners[type] || []).forEach(fn => fn(ev))
   }
   return win
 }
+
+const ROTATE_WAIT = 900
 
 describe('viewport guard', () => {
   it('reads the displacement from either the offset or a page-top that outran scrollY', () => {
@@ -109,5 +112,39 @@ describe('viewport guard', () => {
     w.fire(w.visualViewport, 'scroll')
     expect(w.scrollTo).not.toHaveBeenCalled()
     expect(typeof installViewportGuard({ visualViewport: null, document: {} })).toBe('function')
+  })
+
+  it('realigns after a rotation, even one that left the keyboard reading stuck open', () => {
+    vi.useFakeTimers()
+    const w = fakeWindow()
+    const off = installViewportGuard(w)
+    // mid-rotation: innerHeight lags, so the visual viewport looks a keyboard short
+    w.innerHeight = 1200
+    w.fire(w.visualViewport, 'resize')
+    w.fire(w, 'orientationchange')
+    expect(w.scrollTo).not.toHaveBeenCalled()      // still reads as keyboard-open: hands off
+    // rotation done, page left displaced: the late check catches it…
+    w.innerHeight = 800; w.visualViewport.offsetTop = 160
+    vi.advanceTimersByTime(ROTATE_WAIT)
+    expect(w.scrollTo).toHaveBeenCalled()
+    // …and scrolling corrects it again, because the stale keyboard reading was replaced
+    w.scrollTo.mockClear()
+    w.fire(w.visualViewport, 'scroll')
+    expect(w.scrollTo).toHaveBeenCalledTimes(1)
+    off()
+    vi.useRealTimers()
+  })
+
+  it('realigns when the app comes back to the foreground, not when it leaves', () => {
+    const w = fakeWindow({ offsetTop: 120 })
+    installViewportGuard(w)
+    w.document.visibilityState = 'hidden'
+    w.fire(w.document, 'visibilitychange')
+    expect(w.scrollTo).not.toHaveBeenCalled()
+    w.document.visibilityState = 'visible'
+    w.fire(w.document, 'visibilitychange')
+    expect(w.scrollTo).toHaveBeenCalledTimes(1)
+    w.fire(w, 'pageshow')
+    expect(w.scrollTo).toHaveBeenCalledTimes(2)
   })
 })
